@@ -6,6 +6,18 @@ class MolecularExplorer {
         this.isLoading = false;
         this.currentHighlightedSuggestion = -1;
         
+        // Auto-loading configuration
+        this.autoLoadEnabled = true;
+        this.autoLoadDelay = 1500; // 1.5 seconds after user stops typing
+        this.autoLoadTimer = null;
+        this.lastSearchTerm = '';
+        
+        // Suggestion caching and management
+        this.suggestionCache = new Map();
+        this.suggestionTimer = null;
+        this.suggestionDelay = 300; // 300ms debounce for suggestions
+        this.currentSuggestionRequest = null;
+        
         this.elements = {
             searchInput: document.getElementById('searchInput'),
             searchBtn: document.getElementById('searchBtn'),
@@ -36,7 +48,7 @@ class MolecularExplorer {
             'butane', 'toluene', 'phenol', 'aniline', 'pyridine'
         ];
 
-        // Common compound synonyms for better search
+        // Common compound synonyms for fallback
         this.compoundSynonyms = {
             'paracetamol': 'acetaminophen',
             'tylenol': 'acetaminophen',
@@ -65,7 +77,10 @@ class MolecularExplorer {
     init() {
         this.initViewer();
         this.bindEvents();
-        this.updateStatus('Ready to explore molecules');
+        this.updateStatus('Ready to explore molecules - start typing to search');
+        
+        // Add auto-load indicator to search input placeholder
+        this.elements.searchInput.placeholder = "Start typing compound name (auto-loads after 1.5s)...";
     }
 
     initViewer() {
@@ -80,16 +95,22 @@ class MolecularExplorer {
     }
 
     bindEvents() {
-        // Search functionality
-        this.elements.searchBtn.addEventListener('click', () => this.search());
+        // Enhanced search functionality with auto-loading
+        this.elements.searchBtn.addEventListener('click', () => this.manualSearch());
+        
+        this.elements.searchInput.addEventListener('input', (e) => {
+            this.handleSearchInput(e.target.value);
+        });
+
         this.elements.searchInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
                 if (this.currentHighlightedSuggestion >= 0) {
                     this.selectSuggestion(this.currentHighlightedSuggestion);
                 } else {
-                    this.search();
+                    this.manualSearch();
                 }
                 this.hideSuggestions();
+                e.preventDefault();
             } else if (e.key === 'ArrowDown') {
                 e.preventDefault();
                 this.navigateSuggestions(1);
@@ -98,11 +119,8 @@ class MolecularExplorer {
                 this.navigateSuggestions(-1);
             } else if (e.key === 'Escape') {
                 this.hideSuggestions();
+                this.cancelAutoLoad();
             }
-        });
-
-        this.elements.searchInput.addEventListener('input', (e) => {
-            this.handleSearchInput(e.target.value);
         });
 
         this.elements.searchInput.addEventListener('blur', () => {
@@ -110,6 +128,7 @@ class MolecularExplorer {
             setTimeout(() => this.hideSuggestions(), 150);
         });
 
+        // Other event bindings remain the same
         this.elements.randomBtn.addEventListener('click', () => this.searchRandom());
         this.elements.clearBtn.addEventListener('click', () => this.clear());
 
@@ -148,20 +167,197 @@ class MolecularExplorer {
         });
     }
 
-    // Search input handling with suggestions
+    // Enhanced search input handling with auto-loading and dynamic suggestions
     handleSearchInput(value) {
-        const trimmedValue = value.trim().toLowerCase();
+        const trimmedValue = value.trim();
         
+        // Cancel previous timers
+        this.cancelAutoLoad();
+        this.cancelSuggestionTimer();
+        
+        if (trimmedValue.length === 0) {
+            this.hideSuggestions();
+            this.updateStatus('Ready to explore molecules - start typing to search');
+            return;
+        }
+
         if (trimmedValue.length < 2) {
             this.hideSuggestions();
             return;
         }
 
-        const suggestions = this.generateSuggestions(trimmedValue);
-        this.showSuggestions(suggestions);
+        // Set up auto-loading timer
+        if (this.autoLoadEnabled && trimmedValue.length >= 3) {
+            this.updateStatus(`Will auto-search "${trimmedValue}" in ${this.autoLoadDelay/1000}s...`);
+            this.autoLoadTimer = setTimeout(() => {
+                if (trimmedValue === this.elements.searchInput.value.trim() && 
+                    trimmedValue !== this.lastSearchTerm && 
+                    !this.isLoading) {
+                    this.autoSearch(trimmedValue);
+                }
+            }, this.autoLoadDelay);
+        }
+
+        // Set up suggestions timer with debouncing
+        this.suggestionTimer = setTimeout(() => {
+            this.fetchDynamicSuggestions(trimmedValue);
+        }, this.suggestionDelay);
     }
 
-    generateSuggestions(input) {
+    // Auto-search functionality
+    async autoSearch(query) {
+        try {
+            this.updateStatus(`Auto-searching: ${query}`);
+            await this.loadCompound(query);
+            this.lastSearchTerm = query;
+        } catch (error) {
+            console.error('Auto-search failed:', error);
+            this.updateStatus(`Auto-search failed for "${query}" - try manual search`);
+        }
+    }
+
+    // Manual search (button click or enter key)
+    manualSearch() {
+        const query = this.elements.searchInput.value.trim();
+        if (!query || this.isLoading) return;
+
+        this.cancelAutoLoad();
+        this.hideSuggestions();
+        this.search(query);
+    }
+
+    // Enhanced dynamic suggestion fetching from PubChem API
+    async fetchDynamicSuggestions(input) {
+        const normalizedInput = input.toLowerCase().trim();
+        
+        // Cancel any ongoing suggestion request
+        if (this.currentSuggestionRequest) {
+            this.currentSuggestionRequest.abort();
+        }
+
+        // Check cache first
+        if (this.suggestionCache.has(normalizedInput)) {
+            const cachedSuggestions = this.suggestionCache.get(normalizedInput);
+            this.showSuggestions(cachedSuggestions);
+            return;
+        }
+
+        try {
+            this.currentSuggestionRequest = new AbortController();
+            
+            const suggestions = await this.generateDynamicSuggestions(normalizedInput, this.currentSuggestionRequest.signal);
+            
+            // Cache the results
+            this.suggestionCache.set(normalizedInput, suggestions);
+            
+            // Clear old cache entries (keep only last 50)
+            if (this.suggestionCache.size > 50) {
+                const firstKey = this.suggestionCache.keys().next().value;
+                this.suggestionCache.delete(firstKey);
+            }
+
+            this.showSuggestions(suggestions);
+            
+        } catch (error) {
+            if (error.name !== 'AbortError') {
+                console.warn('Failed to fetch dynamic suggestions:', error);
+                // Fallback to static suggestions
+                const fallbackSuggestions = this.generateStaticSuggestions(normalizedInput);
+                this.showSuggestions(fallbackSuggestions);
+            }
+        } finally {
+            this.currentSuggestionRequest = null;
+        }
+    }
+
+    // Generate dynamic suggestions using PubChem API
+    async generateDynamicSuggestions(input, abortSignal) {
+        const suggestions = [];
+        const maxSuggestions = 8;
+
+        // First, try PubChem autocomplete API
+        try {
+            const autocompleteResponse = await this.fetchWithTimeout(
+                `https://pubchem.ncbi.nlm.nih.gov/rest/autocomplete/compound/${encodeURIComponent(input)}/json?limit=${maxSuggestions}`,
+                3000,
+                abortSignal
+            );
+
+            if (autocompleteResponse.ok) {
+                const autocompleteData = await autocompleteResponse.json();
+                
+                if (autocompleteData && autocompleteData.dictionary_terms) {
+                    autocompleteData.dictionary_terms.compound.forEach(term => {
+                        if (suggestions.length < maxSuggestions) {
+                            suggestions.push({
+                                text: term,
+                                highlight: term,
+                                type: 'pubchem',
+                                confidence: this.calculateConfidence(input, term)
+                            });
+                        }
+                    });
+                }
+            }
+        } catch (error) {
+            console.warn('PubChem autocomplete failed:', error);
+        }
+
+        // If we don't have enough suggestions, try compound name search
+        if (suggestions.length < 3 && !abortSignal?.aborted) {
+            try {
+                const searchResponse = await this.fetchWithTimeout(
+                    `https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${encodeURIComponent(input)}/synonyms/json?MaxRecords=5`,
+                    3000,
+                    abortSignal
+                );
+
+                if (searchResponse.ok) {
+                    const searchData = await searchResponse.json();
+                    
+                    if (searchData?.InformationList?.[0]?.Synonym) {
+                        const synonyms = searchData.InformationList[0].Synonym.slice(0, 3);
+                        synonyms.forEach(synonym => {
+                            // Avoid very long chemical names and registry numbers
+                            if (synonym.length < 50 && 
+                                !synonym.includes('UNII-') && 
+                                !synonym.match(/^\d+/) &&
+                                !suggestions.find(s => s.text.toLowerCase() === synonym.toLowerCase())) {
+                                
+                                suggestions.push({
+                                    text: synonym,
+                                    highlight: synonym,
+                                    type: 'synonym',
+                                    confidence: this.calculateConfidence(input, synonym)
+                                });
+                            }
+                        });
+                    }
+                }
+            } catch (error) {
+                console.warn('PubChem synonym search failed:', error);
+            }
+        }
+
+        // Add static suggestions as fallback
+        if (suggestions.length < maxSuggestions) {
+            const staticSuggestions = this.generateStaticSuggestions(input);
+            staticSuggestions.forEach(suggestion => {
+                if (suggestions.length < maxSuggestions &&
+                    !suggestions.find(s => s.text.toLowerCase() === suggestion.text.toLowerCase())) {
+                    suggestions.push(suggestion);
+                }
+            });
+        }
+
+        // Sort by confidence score
+        suggestions.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+
+        return suggestions.slice(0, maxSuggestions);
+    }
+
+    // Generate static fallback suggestions (your existing logic)
+    generateStaticSuggestions(input) {
         const suggestions = [];
         const maxSuggestions = 5;
 
@@ -171,7 +367,8 @@ class MolecularExplorer {
                 suggestions.push({
                     text: canonical,
                     highlight: synonym,
-                    type: 'synonym'
+                    type: 'synonym',
+                    confidence: this.calculateConfidence(input, synonym)
                 });
             }
         }
@@ -184,13 +381,14 @@ class MolecularExplorer {
                     suggestions.push({
                         text: compound,
                         highlight: compound,
-                        type: 'compound'
+                        type: 'compound',
+                        confidence: this.calculateConfidence(input, compound)
                     });
                 }
             }
         }
 
-        // Add fuzzy matches for common misspellings
+        // Add fuzzy matches for spell checking
         if (suggestions.length < maxSuggestions) {
             const fuzzyMatches = this.getFuzzyMatches(input);
             fuzzyMatches.forEach(match => {
@@ -199,7 +397,8 @@ class MolecularExplorer {
                     suggestions.push({
                         text: match,
                         highlight: match,
-                        type: 'fuzzy'
+                        type: 'fuzzy',
+                        confidence: this.calculateConfidence(input, match)
                     });
                 }
             });
@@ -208,12 +407,43 @@ class MolecularExplorer {
         return suggestions;
     }
 
+    // Calculate confidence score for suggestions
+    calculateConfidence(input, suggestion) {
+        const inputLower = input.toLowerCase();
+        const suggestionLower = suggestion.toLowerCase();
+        
+        // Exact match
+        if (inputLower === suggestionLower) return 100;
+        
+        // Starts with input
+        if (suggestionLower.startsWith(inputLower)) {
+            return 90 - (suggestion.length - input.length) * 2;
+        }
+        
+        // Contains input
+        if (suggestionLower.includes(inputLower)) {
+            return 70 - (suggestion.length - input.length);
+        }
+        
+        // Fuzzy match
+        const distance = this.levenshteinDistance(inputLower, suggestionLower);
+        const maxLength = Math.max(inputLower.length, suggestionLower.length);
+        return Math.max(0, 60 - (distance / maxLength) * 30);
+    }
+
+    // Enhanced fuzzy matching with better spell checking
     getFuzzyMatches(input) {
         const fuzzyMatches = [];
-        const threshold = 2; // Maximum edit distance
+        const threshold = Math.min(3, Math.max(1, Math.floor(input.length * 0.3))); // Dynamic threshold
 
-        for (const compound of this.sampleCompounds) {
-            const distance = this.levenshteinDistance(input, compound.toLowerCase());
+        const allCompounds = [
+            ...this.sampleCompounds,
+            ...Object.keys(this.compoundSynonyms),
+            ...Object.values(this.compoundSynonyms)
+        ];
+
+        for (const compound of allCompounds) {
+            const distance = this.levenshteinDistance(input.toLowerCase(), compound.toLowerCase());
             if (distance <= threshold && distance > 0) {
                 fuzzyMatches.push(compound);
             }
@@ -221,39 +451,33 @@ class MolecularExplorer {
 
         // Sort by edit distance (closer matches first)
         return fuzzyMatches.sort((a, b) => 
-            this.levenshteinDistance(input, a.toLowerCase()) - 
-            this.levenshteinDistance(input, b.toLowerCase())
+            this.levenshteinDistance(input.toLowerCase(), a.toLowerCase()) - 
+            this.levenshteinDistance(input.toLowerCase(), b.toLowerCase())
         );
     }
 
+    // Enhanced Levenshtein distance calculation
     levenshteinDistance(str1, str2) {
-        const matrix = [];
+        const matrix = Array(str2.length + 1).fill().map(() => Array(str1.length + 1).fill(0));
 
-        for (let i = 0; i <= str2.length; i++) {
-            matrix[i] = [i];
-        }
+        for (let i = 0; i <= str1.length; i++) matrix[0][i] = i;
+        for (let j = 0; j <= str2.length; j++) matrix[j][0] = j;
 
-        for (let j = 0; j <= str1.length; j++) {
-            matrix[0][j] = j;
-        }
-
-        for (let i = 1; i <= str2.length; i++) {
-            for (let j = 1; j <= str1.length; j++) {
-                if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
-                    matrix[i][j] = matrix[i - 1][j - 1];
-                } else {
-                    matrix[i][j] = Math.min(
-                        matrix[i - 1][j - 1] + 1,
-                        matrix[i][j - 1] + 1,
-                        matrix[i - 1][j] + 1
-                    );
-                }
+        for (let j = 1; j <= str2.length; j++) {
+            for (let i = 1; i <= str1.length; i++) {
+                const indicator = str1[i - 1] === str2[j - 1] ? 0 : 1;
+                matrix[j][i] = Math.min(
+                    matrix[j][i - 1] + 1,     // deletion
+                    matrix[j - 1][i] + 1,     // insertion
+                    matrix[j - 1][i - 1] + indicator // substitution
+                );
             }
         }
 
         return matrix[str2.length][str1.length];
     }
 
+    // Enhanced suggestion display with type indicators
     showSuggestions(suggestions) {
         const dropdown = this.elements.suggestionsDropdown;
         dropdown.innerHTML = '';
@@ -266,12 +490,43 @@ class MolecularExplorer {
         suggestions.forEach((suggestion, index) => {
             const item = document.createElement('div');
             item.className = 'suggestion-item';
-            item.textContent = suggestion.text;
             
-            // Add type indicator
-            if (suggestion.type === 'synonym') {
-                item.innerHTML = `${suggestion.text} <small style="color: var(--text-light);">(${suggestion.highlight})</small>`;
+            // Create suggestion content with type indicator
+            const content = document.createElement('div');
+            content.style.display = 'flex';
+            content.style.justifyContent = 'space-between';
+            content.style.alignItems = 'center';
+            
+            const text = document.createElement('span');
+            text.textContent = suggestion.text;
+            
+            const typeIndicator = document.createElement('small');
+            typeIndicator.style.color = 'var(--text-light)';
+            typeIndicator.style.fontSize = '0.8rem';
+            
+            switch (suggestion.type) {
+                case 'pubchem':
+                    typeIndicator.textContent = '🔍 PubChem';
+                    break;
+                case 'synonym':
+                    typeIndicator.textContent = `📝 ${suggestion.highlight !== suggestion.text ? suggestion.highlight : 'Synonym'}`;
+                    break;
+                case 'fuzzy':
+                    typeIndicator.textContent = '✨ Did you mean?';
+                    break;
+                case 'compound':
+                    typeIndicator.textContent = '⭐ Popular';
+                    break;
+                default:
+                    typeIndicator.textContent = '';
             }
+            
+            content.appendChild(text);
+            if (typeIndicator.textContent) {
+                content.appendChild(typeIndicator);
+            }
+            
+            item.appendChild(content);
 
             item.addEventListener('click', () => {
                 this.selectSuggestion(index);
@@ -285,11 +540,7 @@ class MolecularExplorer {
         this.currentHighlightedSuggestion = -1;
     }
 
-    hideSuggestions() {
-        this.elements.suggestionsDropdown.classList.remove('show');
-        this.currentHighlightedSuggestion = -1;
-    }
-
+    // Enhanced suggestion navigation
     navigateSuggestions(direction) {
         const suggestions = this.elements.suggestionsDropdown.querySelectorAll('.suggestion-item');
         if (suggestions.length === 0) return;
@@ -312,21 +563,55 @@ class MolecularExplorer {
         // Add new highlight
         if (this.currentHighlightedSuggestion >= 0) {
             suggestions[this.currentHighlightedSuggestion].classList.add('highlighted');
+            // Scroll highlighted item into view
+            suggestions[this.currentHighlightedSuggestion].scrollIntoView({
+                block: 'nearest',
+                behavior: 'smooth'
+            });
         }
     }
 
+    // Enhanced suggestion selection
     selectSuggestion(index) {
         const suggestions = this.elements.suggestionsDropdown.querySelectorAll('.suggestion-item');
         if (index >= 0 && index < suggestions.length) {
-            const suggestionText = suggestions[index].textContent.split('(')[0].trim();
+            const suggestionText = suggestions[index].querySelector('span').textContent.trim();
             this.elements.searchInput.value = suggestionText;
-            this.search();
+            this.cancelAutoLoad(); // Cancel any pending auto-load
+            this.manualSearch(); // Immediately search the selected suggestion
         }
     }
 
-    async search() {
-        const query = this.elements.searchInput.value.trim();
-        if (!query || this.isLoading) return;
+    // Utility functions for timer management
+    cancelAutoLoad() {
+        if (this.autoLoadTimer) {
+            clearTimeout(this.autoLoadTimer);
+            this.autoLoadTimer = null;
+        }
+    }
+
+    cancelSuggestionTimer() {
+        if (this.suggestionTimer) {
+            clearTimeout(this.suggestionTimer);
+            this.suggestionTimer = null;
+        }
+    }
+
+    hideSuggestions() {
+        this.elements.suggestionsDropdown.classList.remove('show');
+        this.currentHighlightedSuggestion = -1;
+        this.cancelSuggestionTimer();
+        
+        if (this.currentSuggestionRequest) {
+            this.currentSuggestionRequest.abort();
+            this.currentSuggestionRequest = null;
+        }
+    }
+
+    // Enhanced search function
+    async search(query = null) {
+        const searchQuery = query || this.elements.searchInput.value.trim();
+        if (!searchQuery || this.isLoading) return;
 
         this.hideSuggestions();
         this.isLoading = true;
@@ -334,7 +619,8 @@ class MolecularExplorer {
         this.showViewerOverlay(true);
 
         try {
-            await this.loadCompound(query);
+            await this.loadCompound(searchQuery);
+            this.lastSearchTerm = searchQuery;
         } catch (error) {
             console.error('Search failed:', error);
             this.showToast(error.message || 'Search failed', 'error');
@@ -345,12 +631,35 @@ class MolecularExplorer {
         }
     }
 
+    // Enhanced random search
     searchRandom() {
         const randomCompound = this.sampleCompounds[Math.floor(Math.random() * this.sampleCompounds.length)];
         this.elements.searchInput.value = randomCompound;
-        this.search();
+        this.cancelAutoLoad();
+        this.manualSearch();
     }
 
+    // Enhanced fetchWithTimeout with abort signal support
+    async fetchWithTimeout(url, timeout = 10000, abortSignal = null) {
+        const controller = abortSignal || new AbortController();
+        const timeoutId = !abortSignal ? setTimeout(() => controller.abort(), timeout) : null;
+        
+        try {
+            const response = await fetch(url, {
+                signal: controller.signal
+            });
+            if (timeoutId) clearTimeout(timeoutId);
+            return response;
+        } catch (error) {
+            if (timeoutId) clearTimeout(timeoutId);
+            if (error.name === 'AbortError') {
+                throw new Error('Request timed out');
+            }
+            throw error;
+        }
+    }
+
+    // The rest of your methods remain the same
     async loadCompound(query) {
         this.updateStatus('Searching PubChem...');
 
@@ -470,25 +779,6 @@ class MolecularExplorer {
         ).sort((a, b) => a.length - b.length); // Prefer shorter names
 
         return commonNames.length > 0 ? commonNames[0] : (iupacName || originalQuery);
-    }
-
-    async fetchWithTimeout(url, timeout = 10000) {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), timeout);
-        
-        try {
-            const response = await fetch(url, {
-                signal: controller.signal
-            });
-            clearTimeout(timeoutId);
-            return response;
-        } catch (error) {
-            clearTimeout(timeoutId);
-            if (error.name === 'AbortError') {
-                throw new Error('Request timed out');
-            }
-            throw error;
-        }
     }
 
     updateCompoundInfo(props, synonyms, originalQuery) {
@@ -683,14 +973,20 @@ class MolecularExplorer {
     }
 
     showHelp() {
-        const helpText = `🧬 Molecular Explorer Help
+        const helpText = `🧬 Enhanced Molecular Explorer Help
 
-🔍 Search:
-• Enter compound names (e.g., "caffeine", "aspirin")
-• Spelling suggestions appear automatically
-• Use arrow keys to navigate suggestions
-• Try common names like "sugar" or "salt"
-• Press Enter or click Search
+🔍 Smart Search Features:
+• Auto-loading: Compounds load automatically after 1.5s of typing
+• Real-time suggestions from PubChem database
+• Spell checking with "Did you mean?" suggestions
+• Dynamic autocomplete without hardcoding
+• Manual search still available via button/Enter
+
+✨ New Auto-Features:
+• Type compound names - no need to press search!
+• Get live suggestions from PubChem's database
+• Automatic spell correction suggestions
+• Smart caching for faster repeat searches
 
 🎮 Controls:
 • Mouse: Click and drag to rotate
@@ -703,19 +999,22 @@ class MolecularExplorer {
 • Ctrl+/ : Focus search box
 • Ctrl+R : Reset view
 • Arrow keys: Navigate suggestions
-• Escape: Hide suggestions
+• Enter: Search highlighted suggestion
+• Escape: Hide suggestions & cancel auto-load
 
 🎨 Visualization Styles:
-• Ball & Stick: Best for structure
+• Ball & Stick: Best for structure analysis
 • Stick: Clean bond representation
 • Space-filling: Shows molecular volume
 • Wireframe: Minimal representation
 
-💡 Tips:
-• Download SDF files for other software
-• Share molecules with the share button
-• Try different visualization styles
-• Use synonyms (e.g., "tylenol" for acetaminophen)`;
+💡 Pro Tips:
+• Start typing - compounds auto-load after 1.5s
+• Use arrow keys to browse smart suggestions
+• Try partial names - system will suggest completions
+• Suggestions show source (PubChem, Popular, etc.)
+• Download SDF files for external software
+• Share molecules with the share button`;
 
         alert(helpText);
     }
@@ -724,6 +1023,7 @@ class MolecularExplorer {
         this.elements.searchInput.value = '';
         this.elements.searchInput.focus();
         this.hideSuggestions();
+        this.cancelAutoLoad();
         
         if (this.viewer) {
             this.viewer.clear();
@@ -732,12 +1032,13 @@ class MolecularExplorer {
         
         this.currentSdf = null;
         this.currentCid = null;
+        this.lastSearchTerm = '';
         
         this.elements.nameValue.innerHTML = '—';
         this.elements.formulaValue.textContent = '—';
         this.elements.massValue.textContent = '—';
         
-        this.updateStatus('Ready to explore molecules');
+        this.updateStatus('Ready to explore molecules - start typing to search');
     }
 
     updateStatus(message) {
@@ -772,7 +1073,30 @@ class MolecularExplorer {
         
         if (search) {
             this.elements.searchInput.value = search;
-            this.search();
+            this.manualSearch();
+        }
+    }
+
+    // Additional utility method for debugging
+    toggleAutoLoad() {
+        this.autoLoadEnabled = !this.autoLoadEnabled;
+        const status = this.autoLoadEnabled ? 'enabled' : 'disabled';
+        this.showToast(`Auto-loading ${status}`, 'info');
+        
+        if (this.autoLoadEnabled) {
+            this.elements.searchInput.placeholder = "Start typing compound name (auto-loads after 1.5s)...";
+        } else {
+            this.elements.searchInput.placeholder = "Enter compound name and press search...";
+        }
+    }
+
+    // Method to adjust auto-load delay
+    setAutoLoadDelay(milliseconds) {
+        if (milliseconds >= 500 && milliseconds <= 5000) {
+            this.autoLoadDelay = milliseconds;
+            this.showToast(`Auto-load delay set to ${milliseconds/1000}s`, 'success');
+        } else {
+            this.showToast('Auto-load delay must be between 0.5-5 seconds', 'error');
         }
     }
 }
@@ -782,6 +1106,24 @@ document.addEventListener('DOMContentLoaded', () => {
     const explorer = new MolecularExplorer();
     explorer.checkUrlParams();
     
-    // Global reference for debugging
+    // Global reference for debugging and client customization
     window.molecularExplorer = explorer;
+    
+    // Console methods for client customization
+    console.log(`
+🧬 Molecular Explorer Enhanced!
+
+Available console commands:
+• molecularExplorer.toggleAutoLoad() - Toggle auto-loading on/off
+• molecularExplorer.setAutoLoadDelay(ms) - Set auto-load delay (500-5000ms)
+• molecularExplorer.autoLoadDelay - Current delay in milliseconds
+• molecularExplorer.suggestionCache - View cached suggestions
+
+Features:
+✅ Auto-loading after typing stops
+✅ Real-time PubChem API suggestions
+✅ Intelligent spell checking
+✅ Dynamic autocomplete
+✅ Smart caching system
+    `);
 });
