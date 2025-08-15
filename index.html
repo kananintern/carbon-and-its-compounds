@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Carbon and its Compounds</title>
+    
+    <!-- 3Dmol.js -->
+    <script src="https://3dmol.csb.pitt.edu/build/3Dmol-min.js"></script>
+    
+    <!-- External CSS -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app">
+        <header class="header">
+            <div class="header-content">
+                <h1>🧬 Carbon and its Compounds</h1>
+                <p>Discover, visualize, and analyze molecular structures</p>
+            </div>
+        </header>
+
+        <main class="main">
+            <div class="search-card">
+                <div class="search-form">
+                    <div class="search-input-container">
+                        <div class="search-icon">🔍</div>
+                        <input 
+                            id="searchInput" 
+                            type="text" 
+                            class="search-input"
+                            placeholder="Enter compound name (e.g., caffeine, glucose, aspirin)..."
+                            aria-label="Search for compounds"
+                            autocomplete="off"
+                        >
+                        <div id="suggestionsDropdown" class="suggestions-dropdown"></div>
+                    </div>
+                    <button id="searchBtn" class="btn btn-primary">
+                        <span>Search</span>
+                        <span>⚡</span>
+                    </button>
+                    <button id="randomBtn" class="btn btn-secondary">
+                        <span>Random</span>
+                        <span>🎲</span>
+                    </button>
+                    <button id="clearBtn" class="btn btn-secondary">Clear</button>
+                </div>
+            </div>
+
+            <div class="content-grid">
+                <div class="viewer-card">
+                    <div class="viewer-controls">
+                        <div class="control-group">
+                            <label for="styleSelect" class="sr-only">Visualization style</label>
+                            <select id="styleSelect" class="control-select">
+                                <option value="ballstick">Ball & Stick</option>
+                                <option value="stick">Stick</option>
+                                <option value="sphere">Space-filling</option>
+                                <option value="wire">Wireframe</option>
+                            </select>
+                            <button id="resetBtn" class="control-btn" title="Reset camera view">📷 Reset</button>
+                            <button id="downloadBtn" class="control-btn" title="Download SDF file">💾 Download</button>
+                        </div>
+                        <div class="control-group">
+                            <button id="fullscreenBtn" class="control-btn" title="Toggle fullscreen">⛶ Fullscreen</button>
+                        </div>
+                    </div>
+
+                    <div id="viewer">
+                        <div class="viewer-placeholder">
+                            <div class="icon">🧪</div>
+                            <h3>Ready to explore molecules</h3>
+                            <p>Search for a compound above to begin your molecular journey</p>
+                        </div>
+                        <div id="viewerOverlay" class="viewer-overlay">
+                            <div style="color: white; text-align: center;">
+                                <div class="spinner" style="border-color: rgba(255,255,255,0.3); border-top-color: white;"></div>
+                                <div>Rendering molecule...</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="status-bar">
+                        <div id="statusText" class="status-text">Ready to search</div>
+                        <div class="control-group">
+                            <button id="helpBtn" class="control-btn">❓ Help</button>
+                            <button id="shareBtn" class="control-btn">🔗 Share</button>
+                        </div>
+                    </div>
+                </div>
+
+                <aside class="info-panel">
+                    <div class="info-section">
+                        <div class="info-title">
+                            <span>📋</span>
+                            <span>Compound Information</span>
+                        </div>
+                        <div class="property-grid" id="compoundInfo">
+                            <div class="property-item">
+                                <span class="property-label">Name</span>
+                                <div class="property-value compound-name" id="nameValue">—</div>
+                            </div>
+                            <div class="property-item">
+                                <span class="property-label">Formula</span>
+                                <span class="property-value" id="formulaValue">—</span>
+                            </div>
+                            <div class="property-item">
+                                <span class="property-label">Mass</span>
+                                <span class="property-value" id="massValue">—</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="info-section">
+                        <div class="info-title">
+                            <span>🎨</span>
+                            <span>Element Colors</span>
+                        </div>
+                        <div class="legend" id="colorLegend">
+                            <div class="legend-item">
+                                <div class="color-dot" style="background: #808080;"></div>
+                                <span>Carbon</span>
+                            </div>
+                            <div class="legend-item">
+                                <div class="color-dot" style="background: white; border-color: #ccc;"></div>
+                                <span>Hydrogen</span>
+                            </div>
+                            <div class="legend-item">
+                                <div class="color-dot" style="background: #ff0000;"></div>
+                                <span>Oxygen</span>
+                            </div>
+                            <div class="legend-item">
+                                <div class="color-dot" style="background: #0000ff;"></div>
+                                <span>Nitrogen</span>
+                            </div>
+                            <div class="legend-item">
+                                <div class="color-dot" style="background: #ffff00;"></div>
+                                <span>Sulfur</span>
+                            </div>
+                            <div class="legend-item">
+                                <div class="color-dot" style="background: #00ff00;"></div>
+                                <span>Chlorine</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="info-section">
+                        <div class="info-title">
+                            <span>💡</span>
+                            <span>Quick Tips</span>
+                        </div>
+                        <div style="font-size: 0.9rem; color: var(--text-muted); line-height: 1.5;">
+                            • Try searching for "caffeine", "aspirin", or "glucose"<br>
+                            • Use mouse to rotate, scroll to zoom<br>
+                            • Switch between visualization styles<br>
+                            • Download molecules as SDF files<br>
+                            • Spelling suggestions will appear as you type
+                        </div>
+                    </div>
+                </aside>
+            </div>
+        </main>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" class="loading-overlay">
+        <div class="loading-card">
+            <div class="spinner"></div>
+            <div><strong>Loading compound...</strong></div>
+            <div style="font-size: 0.9rem; color: var(--text-muted); margin-top: 0.5rem;">
+                Fetching data from PubChem
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toast" class="toast"></div>
+
+    <!-- External JavaScript -->
+    <script src="app.js"></script>
+</body>
+</html>
